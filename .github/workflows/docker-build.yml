@@ -1,0 +1,154 @@
+###############################################################################
+# Workflow: Build & Push Docker Image
+#
+# Purpose:
+# - Build the GitHub runner Docker image from `docker/dockerfile`
+# - Push the image to Amazon ECR in a shared AWS account
+#
+# Triggers:
+# - Manual (`workflow_dispatch`) with an explicit `image_tag` input
+# - Pushes to `main` that modify files under `docker/**`
+#
+# Auth:
+# - Uses GitHub OIDC (`id-token: write`) to assume an AWS IAM role
+# - Logs into ECR and pushes tags `${IMAGE_TAG}` and `latest`
+###############################################################################
+
+name: Build & Push Docker Image
+
+on:
+  # Manual run (allows specifying an image tag).
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag (e.g., latest, v1.0.0)'
+        required: true
+        default: 'latest'
+        type: string
+  # Automatic run on pushes to main when Docker context changes.
+  push:
+    branches:
+      - main
+    paths:
+      - 'docker/**'
+
+env:
+  # ECR repository name (the registry host is discovered via the login step output).
+  ECR_REPOSITORY: github-runner
+  # Base image used by docker/dockerfile (set this as a GitHub Actions Variable or Secret).
+  # NOTE: This must be pullable by the assumed role in `SHARED_AWS_ACCOUNT_ID`.
+  # If you point this at an ECR registry in a different AWS account without cross-account ECR permissions
+  # (and/or logging into that registry), `docker build` will fail with `401 Unauthorized` when pulling the `FROM` image.
+  RUNNER_BASE_IMAGE: ${{ vars['RUNNER_BASE_IMAGE'] }}
+
+jobs:
+  build-and-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest # Uses GitHub-hosted runner for build/push
+
+    permissions:
+      id-token: write   # Required for AWS OIDC (configure-aws-credentials uses this)
+      contents: read    # Required to checkout the repository
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Assume this role in the shared AWS account (account id + role name stored as secrets).
+          role-to-assume: arn:aws:iam::${{ secrets.SHARED_AWS_ACCOUNT_ID }}:role/${{ secrets.SHARED_AWS_ROLE_NAME }}
+          role-duration-seconds: 3600            # Session length for the assumed role (seconds)
+          aws-region: ${{ vars.SHARED_AWS_REGION }} # Region for AWS API calls (and ECR)
+          role-session-name: GitHubActionsDockerBuild # Session name visible in CloudTrail
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        # Output: `steps.login-ecr.outputs.registry` (e.g., `<acct>.dkr.ecr.<region>.amazonaws.com`)
+
+      - name: Set image tag
+        id: tag
+        run: |
+          # Select a tag:
+          # - Manual dispatch uses the provided input
+          # - Push events use the short commit SHA
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "IMAGE_TAG=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
+          else
+            # For push events, use commit SHA short
+            echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Render Dockerfile for Checkov scan
+        # Checkov can't resolve build-args in `FROM ${RUNNER_BASE_IMAGE}` during static analysis,
+        # so we render a temporary Dockerfile with the real value substituted.
+        run: |
+          set -euo pipefail
+
+          if [ -z "${RUNNER_BASE_IMAGE}" ]; then
+            echo "ERROR: RUNNER_BASE_IMAGE is not set."
+            echo "Set GitHub Actions Variable RUNNER_BASE_IMAGE (or adjust workflow to read from secrets)."
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          src = Path("docker/dockerfile")
+          dst = Path("docker/dockerfile.checkov")
+
+          content = src.read_text(encoding="utf-8")
+          content = content.replace("${RUNNER_BASE_IMAGE}", os.environ["RUNNER_BASE_IMAGE"])
+          dst.write_text(content, encoding="utf-8")
+
+          print(f"Wrote {dst}")
+          PY
+
+      - name: Checkov Scan (Dockerfile)
+        # Checkov "container tooling": scan the Dockerfile for policy / misconfiguration issues
+        # (best practices and security hardening).
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          file: docker/dockerfile.checkov
+          framework: dockerfile
+          output_format: cli
+          output_file_path: checkov-dockerfile.txt
+          soft_fail: false
+
+      - name: Build Docker image
+        run: |
+          # Fail early if required build arg isn't provided.
+          if [ -z "${RUNNER_BASE_IMAGE}" ]; then
+            echo "ERROR: RUNNER_BASE_IMAGE is not set."
+            echo "Set GitHub Actions Variable RUNNER_BASE_IMAGE (or adjust workflow to read from secrets)."
+            exit 1
+          fi
+
+          # Build and tag:
+          # - `${IMAGE_TAG}` (input or short SHA)
+          # - `latest` (convenience tag)
+          docker build \
+            --build-arg RUNNER_BASE_IMAGE="${RUNNER_BASE_IMAGE}" \
+            -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.tag.outputs.IMAGE_TAG }} \
+            -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest \
+            -f docker/dockerfile \
+            docker/
+
+      - name: Push Docker image to ECR
+        run: |
+          # Push both tags so consumers can pin to a version or track `latest`.
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.tag.outputs.IMAGE_TAG }}
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+
+      - name: Output image details
+        run: |
+          # Write a nice summary for the workflow run page.
+          echo "## Docker Image Built Successfully! 🐳" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** \`${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** \`${{ steps.tag.outputs.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Also tagged as:** \`latest\`" >> $GITHUB_STEP_SUMMARY
+

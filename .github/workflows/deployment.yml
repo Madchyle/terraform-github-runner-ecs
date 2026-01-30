@@ -1,0 +1,236 @@
+###############################################################################
+# Workflow: Multi-Org GitHub Runner Deployment
+#
+# Purpose:
+# - Validate Terraform and run security scanning (Checkov) on PRs/pushes.
+# - Run Terraform plan/apply/destroy on demand via `workflow_dispatch`.
+#
+# Why this workflow is split into two jobs:
+# - `checkov`: fast feedback on PRs and pushes (no AWS credentials required).
+# - `terraform`: privileged operations that assume an AWS role via GitHub OIDC (manual only).
+###############################################################################
+
+name: Multi-Org github runner Deployment
+
+on:
+  # Manual trigger: choose the Terraform action to execute.
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Terraform action to perform'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+          - plan
+          - deploy
+          - destroy
+  # CI trigger: run validation/scanning on changes merged into main.
+  push:
+    branches:
+      - main
+  # CI trigger: run validation/scanning for PRs targeting main.
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  # Security scan job - runs on PR and push to main
+  checkov:
+    name: Security Scan
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read          # Checkout repository
+      pull-requests: write    # Allow Checkov to annotate PRs (when supported/configured)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          # Pin Terraform version for consistent validation across runs.
+          terraform_version: 1.9.5
+
+      - name: Terraform Init (local backend for validation)
+        # Validate configuration without configuring remote state.
+        run: terraform init -backend=false
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Test (fixtures)
+        # Run Terraform native tests (with mocked providers) for lightweight CI validation.
+        # Fixture tests live under tests/fixtures/* so we can validate representative configurations
+        # without AWS credentials (mock_provider "aws").
+        run: |
+          set -euo pipefail
+
+          if [ ! -d "tests/fixtures" ]; then
+            echo "No tests/fixtures directory; skipping terraform test."
+            exit 0
+          fi
+
+          shopt -s nullglob
+          for fixture_dir in tests/fixtures/*; do
+            if [ -d "${fixture_dir}" ]; then
+              echo "Running terraform test in ${fixture_dir}"
+              (cd "${fixture_dir}" && terraform init -backend=false && terraform test)
+            fi
+          done
+
+      - name: Checkov Scan
+        # Static analysis of Terraform (security/compliance). Fails the job on findings when `soft_fail: false`.
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          output_format: cli
+          output_file_path: checkov.txt
+          soft_fail: false
+
+  # Infrastructure job - runs only on workflow_dispatch.
+  # Uses AWS OIDC to assume a role and then runs Terraform (init/plan/apply/destroy).
+  terraform:
+    name: Terraform ${{ github.event.inputs.action }}
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write   # Required for AWS OIDC
+      contents: read    # Checkout repository
+
+    env:
+      # Terraform CLI flags (applies to all Terraform invocations in this job).
+      TF_CLI_ARGS_init: -upgrade
+      TF_CLI_ARGS_plan: -input=false
+
+      # Terraform variables passed via environment (TF_VAR_*).
+      # Example: Settings -> Secrets and variables -> Actions -> Variables -> SHARED_AWS_ACCOUNT_ID
+      TF_VAR_aws_account_id: ${{ secrets.SHARED_AWS_ACCOUNT_ID }}
+      TF_VAR_aws_region: ${{ vars.SHARED_AWS_REGION }}
+      TF_VAR_vpc_id: ${{ secrets.SHARED_VPC_ID }}
+      TF_VAR_subnets: ${{ secrets.SHARED_SUBNETS }}
+      # Top-level security_group_ids: used for infrastructure (runner_infra module) 
+      # and as fallback for runner_service modules when they don't specify their own
+      TF_VAR_security_group_ids: ${{ secrets.SHARED_SECURITY_GROUP_IDS }}
+      # Map of runner services to create (JSON string). Built from repo-level secrets/vars.
+      TF_VAR_runner_services: |-
+        {
+          "${{ secrets.SHARED_RUNNER_SERVICE_NAME }}": {
+            "github_org": "${{ secrets.SHARED_GITHUB_ORG }}",
+            "runner_token_ssm_parameter_name": "${{ secrets.SHARED_RUNNER_TOKEN_SSM_PARAMETER_NAME }}",
+            "runner_image": "${{ vars.SHARED_RUNNER_IMAGE }}",
+            "desired_count": ${{ vars.SHARED_DESIRED_COUNT }},
+            "deployment_minimum_healthy_percent": ${{ vars.SHARED_DEPLOYMENT_MIN_HEALTHY_PERCENT || 100 }},
+            "deployment_maximum_percent": ${{ vars.SHARED_DEPLOYMENT_MAXIMUM_PERCENT || 200 }},
+            "runner_name_prefix": "${{ vars.SHARED_RUNNER_NAME_PREFIX }}",
+            "runner_labels": "${{ vars.SHARED_RUNNER_LABELS }}"
+          }
+        }
+      TF_VAR_instance_ami: ${{ vars.SHARED_INSTANCE_AMI }}
+
+    steps:
+      # 1. Checkout the repository at the workflow commit.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Configure AWS credentials via GitHub OIDC (assume-role).
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.SHARED_AWS_ACCOUNT_ID }}:role/${{ secrets.SHARED_AWS_ROLE_NAME }}
+          role-duration-seconds: 7200 # Session duration (seconds)
+          aws-region: ${{ vars.SHARED_AWS_REGION }} # Region for AWS API calls
+          role-session-name: GitHubActionsTerraform-${{ github.event.inputs.action }}
+
+      - name: Verify IAM Role
+        # Quick sanity check that credentials are valid and role is assumed.
+        run: |
+          echo "Checking IAM role details..."
+          aws sts get-caller-identity
+          aws iam get-role --role-name ${{ secrets.SHARED_AWS_ROLE_NAME }}
+
+      # 3. Install/pin Terraform.
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.5
+
+      - name: Terraform Test (fixtures)
+        # Run the same lightweight fixture tests on manual deploys, before touching remote state.
+        # These use mocked providers, so they do not require AWS credentials, but they catch
+        # obvious Terraform regressions early.
+        run: |
+          set -euo pipefail
+
+          if [ ! -d "tests/fixtures" ]; then
+            echo "No tests/fixtures directory; skipping terraform test."
+            exit 0
+          fi
+
+          shopt -s nullglob
+          for fixture_dir in tests/fixtures/*; do
+            if [ -d "${fixture_dir}" ]; then
+              echo "Running terraform test in ${fixture_dir}"
+              (cd "${fixture_dir}" && terraform init -backend=false && terraform test)
+            fi
+          done
+
+      # 4. Terraform init configured for the remote backend (S3) used by this repository.
+      - name: Terraform Init
+        run: |
+          set -euo pipefail
+          TFVARS_FILE="env/multi-org.tfvars"
+
+          if [ ! -f "${TFVARS_FILE}" ]; then
+            echo "ERROR: tfvars file not found: ${TFVARS_FILE}"
+            echo "Create env/multi-org.tfvars (see README) and re-run."
+            exit 1
+          fi
+
+          # Ensure we never attempt to migrate/copy any local state from the repo checkout.
+          rm -f terraform.tfstate terraform.tfstate.backup "terraform copy.tfstate" || true
+
+          terraform init -input=false -upgrade -reconfigure \
+            -backend-config="bucket=${{ secrets.TF_BACKEND_BUCKET }}" \
+            -backend-config="region=${{ vars.SHARED_AWS_REGION }}" \
+            -backend-config="encrypt=true" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}"  # Terraform remote state key (S3 bucket key). REQUIRED GitHub Actions variable
+
+      # 5. Validate Terraform configuration (syntax and internal consistency).
+      - name: Terraform Validate
+        run: terraform validate
+
+      # 6. Run Checkov scan again in the privileged job (skip for destroy).
+      # Useful because it runs on the exact config being planned/applied.
+      - name: Checkov Scan
+        if: github.event.inputs.action != 'destroy'
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          output_format: cli
+          output_file_path: checkov.txt
+
+      # 7. Create a plan file used by apply (deploy) or as output (plan).
+      - name: Terraform Plan
+        if: github.event.inputs.action == 'plan' || github.event.inputs.action == 'deploy'
+        run: |
+          set -euo pipefail
+          terraform plan -out=tfplan -var-file="env/multi-org.tfvars"
+
+      # 8. Apply the previously-created plan (only for deploy).
+      - name: Terraform Apply
+        if: github.event.inputs.action == 'deploy'
+        run: terraform apply -auto-approve tfplan
+
+      # 9. Destroy all resources managed by this Terraform configuration (only for destroy).
+      - name: Terraform Destroy
+        if: github.event.inputs.action == 'destroy'
+        run: |
+          set -euo pipefail
+          terraform destroy -auto-approve -var-file="env/multi-org.tfvars"

@@ -1,0 +1,52 @@
+# ============================================================================
+# GitHub Actions Runner Docker Image
+# ============================================================================
+#
+# This Dockerfile builds a custom GitHub Actions runner image for use with
+# AWS ECS. It extends the base GitHub Actions runner image with additional
+# system packages and directory setup required for running workflows.
+#
+# The resulting image will be used by ECS tasks to run GitHub Actions workflows
+# on self-hosted runners in your AWS infrastructure.
+#
+# ============================================================================
+
+# Base image: GitHub Actions runner image from ECR
+# Base image is provided at build time (no hardcoded value in this Dockerfile).
+# Example structure (do not paste real values here):
+#   <REGISTRY>/<REPOSITORY>:<TAG_OR_DIGEST>
+ARG RUNNER_BASE_IMAGE
+FROM ${RUNNER_BASE_IMAGE}
+
+# Switch to root user to install system packages
+USER root
+
+# Install essential system packages needed by GitHub Actions workflows
+# Includes: git, curl, tar, unzip, and other common utilities
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      lsb-release ca-certificates git curl tar xz-utils unzip procps \
+ && rm -rf /var/lib/apt/lists/*
+
+# Optional: Pre-create the hosted toolcache directory used by setup-python and other
+# GitHub Actions that cache tools. This ensures proper permissions from the start.
+RUN mkdir -p /opt/hostedtoolcache && chmod 0777 /opt/hostedtoolcache
+
+# Create the /github/workspace directory where workflow files will be mounted
+# Docker actions receive the workspace via bind mount, not symlinks
+RUN mkdir -p /github/workspace
+
+# Drop privileges by default (Checkov CKV_DOCKER_8 expects the last USER to be non-root).
+# The ECS task definition may still override the runtime user; this makes the image itself safer by default.
+RUN set -eux; \
+    if ! id -u runner >/dev/null 2>&1; then \
+      useradd --create-home --home-dir /home/runner --shell /bin/bash runner; \
+    fi; \
+    chown -R runner:runner /home/runner /github/workspace /opt/hostedtoolcache
+
+USER runner
+
+# Provide a meaningful container health signal (Checkov CKV_DOCKER_2).
+# The GitHub Actions runner runs a long-lived listener/worker; if neither is present, consider it unhealthy.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD pgrep -f 'Runner.Listener' >/dev/null || pgrep -f 'Runner.Worker' >/dev/null

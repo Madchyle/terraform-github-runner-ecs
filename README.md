@@ -93,7 +93,7 @@ The workflow requires you to set up GitHub repository secrets and variables. Her
 **GitHub Secrets (sensitive information):**
 
 | Secret Name | Example Value | Why You Need This | Where to Get This |
-|------------|---------------|-------------------|-------------------|
+|:---------|:------------|-------------------|-------------------|
 | `SHARED_AWS_ACCOUNT_ID` | `123456789012` | Used to construct ARNs and assume IAM roles. The workflow needs this to authenticate with AWS using OIDC. | See Step 1 for instructions. |
 | `SHARED_VPC_ID` | `vpc-0123456789abcdef0` | The runners need to be deployed into a specific VPC (Virtual Private Cloud) for network isolation and security. This tells Terraform which VPC to use. | See Step 3 for instructions. If you don't have access, ask your AWS administrator or network team. |
 | `SHARED_SUBNETS` | `subnet-0123456789abcdef0,subnet-0fedcba9876543210` | Subnets are specific network segments within your VPC. You need at least 2 subnets (preferably in different Availability Zones) for high availability. The runners will be deployed across these subnets. | See Step 3 for instructions. If unsure which subnets to use, ask your AWS administrator - they should be private subnets (not public internet-facing ones). |

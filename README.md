@@ -94,7 +94,7 @@ The workflow requires you to set up GitHub repository secrets and variables. Her
 **GitHub Secrets (sensitive information):**
 
 | Secret Name | Example Value | Why You Need This | Where to Get This |
-|:------|:------|:-------------------|:-------------------|
+|:------|:------|:-------------------|:--------------------|
 | `SHARED_AWS_ACCOUNT_ID` | `123456789012` | Used to construct ARNs and assume IAM roles. The workflow needs this to authenticate with AWS using OIDC. | See Step 1 for instructions. |
 | `SHARED_VPC_ID` | `vpc-0123456789abcdef0` | The runners need to be deployed into a specific VPC (Virtual Private Cloud) for network isolation and security. This tells Terraform which VPC to use. | See Step 3 for instructions. If you don't have access, ask your AWS administrator or network team. |
 | `SHARED_SUBNETS` | `subnet-0123456789abcdef0,subnet-0fedcba9876543210` | Subnets are specific network segments within your VPC. You need at least 2 subnets (preferably in different Availability Zones) for high availability. The runners will be deployed across these subnets. | See Step 3 for instructions. If unsure which subnets to use, ask your AWS administrator - they should be private subnets (not public internet-facing ones). |
@@ -108,7 +108,7 @@ The workflow requires you to set up GitHub repository secrets and variables. Her
 **GitHub Variables (non-sensitive configuration):**
 
 | Variable Name | Example Value | Why You Need This | Where to Get This |
-|------|------|-------------------|-------------------|
+|------|------|--------------------|--------------------|
 | `SHARED_AWS_REGION` | `us-east-1`, `us-west-2`, `eu-west-1`, `ap-southeast-2` | All AWS resources (ECS cluster, EC2 instances, etc.) will be created in this region. Choose a region close to your users or that meets compliance requirements. | See Step 1 for instructions. If unsure, ask your AWS administrator about your organization's preferred region. |
 | `SHARED_RUNNER_IMAGE` | `123456789012.dkr.ecr.us-east-1.amazonaws.com/github-runner:latest` | This is the Docker image that contains the GitHub Actions runner software. ECS will pull this image and run it as containers on your EC2 instances. | See Step 6 for instructions. The format is: `ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/REPOSITORY_NAME:TAG` |
 | `SHARED_DESIRED_COUNT` | `1`, `2`, `5` | This controls how many runner containers will be running simultaneously. More runners = more workflows can run in parallel, but also higher AWS costs. Start with 1 and increase if you need more parallel capacity. | Consider your typical workflow load. If you have many concurrent workflows, you may need 2-5 runners. If workflows run sequentially, 1 is usually sufficient. You can always change this later and redeploy. |
@@ -265,7 +265,7 @@ Now that you've gathered all the information from the previous steps, add them t
 Go to your GitHub repository → **Settings** → **Secrets and variables** → **Actions** → **Secrets** tab, and add these secrets using the values you collected:
 
 | Secret Name | What to Enter | Example Value | Why You Need This | Where You Got This |
-|------------|---------------|---------------|-------------------|-------------------|
+|:--------|:--------|---------------|-------------------|-------------------|
 | `SHARED_AWS_ACCOUNT_ID` | Your 12-digit AWS account ID | `123456789012` | Used by the workflow to construct AWS ARNs and assume IAM roles for authentication | **Step 1** - Found in AWS Console or via `aws sts get-caller-identity` |
 | `SHARED_VPC_ID` | Your VPC ID | `vpc-0123456789abcdef0` | Specifies which VPC network the runners will be deployed into for network isolation | **Step 3** - Found in AWS Console (VPC → Your VPCs). If you don't have this, ask your AWS administrator or network team |
 | `SHARED_SUBNETS` | Comma-separated subnet IDs (no spaces) | `subnet-0123456789abcdef0,subnet-0fedcba9876543210` | Specifies which subnets (network segments) the runners will use. Need at least 2 for high availability | **Step 3** - Found in AWS Console (VPC → Subnets). Ask your AWS administrator which private subnets to use if unsure |

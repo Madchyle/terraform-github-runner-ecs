@@ -51,6 +51,7 @@ You're going to create:
 Before you begin, make sure you have:
 
 1. **An AWS Account** - You'll need access to create resources
+               https://aws.amazon.com/free/
 2. **AWS CLI Installed** - A tool to talk to AWS from your computer
    - Download: https://aws.amazon.com/cli/
    - After installing, run: `aws configure` to set up your credentials
@@ -93,7 +94,7 @@ The workflow requires you to set up GitHub repository secrets and variables. Her
 **GitHub Secrets (sensitive information):**
 
 | Secret Name | Example Value | Why You Need This | Where to Get This |
-|:---------|:------------|-------------------|-------------------|
+|:------|:------|:-------------------|:-------------------|
 | `SHARED_AWS_ACCOUNT_ID` | `123456789012` | Used to construct ARNs and assume IAM roles. The workflow needs this to authenticate with AWS using OIDC. | See Step 1 for instructions. |
 | `SHARED_VPC_ID` | `vpc-0123456789abcdef0` | The runners need to be deployed into a specific VPC (Virtual Private Cloud) for network isolation and security. This tells Terraform which VPC to use. | See Step 3 for instructions. If you don't have access, ask your AWS administrator or network team. |
 | `SHARED_SUBNETS` | `subnet-0123456789abcdef0,subnet-0fedcba9876543210` | Subnets are specific network segments within your VPC. You need at least 2 subnets (preferably in different Availability Zones) for high availability. The runners will be deployed across these subnets. | See Step 3 for instructions. If unsure which subnets to use, ask your AWS administrator - they should be private subnets (not public internet-facing ones). |
@@ -107,7 +108,7 @@ The workflow requires you to set up GitHub repository secrets and variables. Her
 **GitHub Variables (non-sensitive configuration):**
 
 | Variable Name | Example Value | Why You Need This | Where to Get This |
-|--------------|---------------|-------------------|-------------------|
+|------|------|-------------------|-------------------|
 | `SHARED_AWS_REGION` | `us-east-1`, `us-west-2`, `eu-west-1`, `ap-southeast-2` | All AWS resources (ECS cluster, EC2 instances, etc.) will be created in this region. Choose a region close to your users or that meets compliance requirements. | See Step 1 for instructions. If unsure, ask your AWS administrator about your organization's preferred region. |
 | `SHARED_RUNNER_IMAGE` | `123456789012.dkr.ecr.us-east-1.amazonaws.com/github-runner:latest` | This is the Docker image that contains the GitHub Actions runner software. ECS will pull this image and run it as containers on your EC2 instances. | See Step 6 for instructions. The format is: `ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/REPOSITORY_NAME:TAG` |
 | `SHARED_DESIRED_COUNT` | `1`, `2`, `5` | This controls how many runner containers will be running simultaneously. More runners = more workflows can run in parallel, but also higher AWS costs. Start with 1 and increase if you need more parallel capacity. | Consider your typical workflow load. If you have many concurrent workflows, you may need 2-5 runners. If workflows run sequentially, 1 is usually sufficient. You can always change this later and redeploy. |
@@ -125,6 +126,7 @@ A VPC is like a private network in AWS. You need one with:
    - Find your VPC: AWS Console → VPC → Your VPCs
    - Find your subnets: AWS Console → VPC → Subnets
    - Write down the VPC ID (looks like `vpc-12345678`) and at least 2 subnet IDs (look like `subnet-12345678`)
+   - If you get permission errors ensure that you're in the right region 
 
 2. **DNS Enabled** - This lets your runners find things on the internet
    - Check if enabled: AWS Console → VPC → Your VPCs → Select your VPC → Check "DNS hostnames" and "DNS resolution"

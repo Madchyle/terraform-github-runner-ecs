@@ -265,7 +265,7 @@ Now that you've gathered all the information from the previous steps, add them t
 Go to your GitHub repository → **Settings** → **Secrets and variables** → **Actions** → **Secrets** tab, and add these secrets using the values you collected:
 
 | Secret Name | What to Enter | Example Value | Why You Need This | Where You Got This |
-|:--------|:--------|:---------------|:-------------------|:-------------------|
+|:------|:--------|:--------|:-------------------|:-------------------|
 | `SHARED_AWS_ACCOUNT_ID` | Your 12-digit AWS account ID | `123456789012` | Used by the workflow to construct AWS ARNs and assume IAM roles for authentication | **Step 1** - Found in AWS Console or via `aws sts get-caller-identity` |
 | `SHARED_VPC_ID` | Your VPC ID | `vpc-0123456789abcdef0` | Specifies which VPC network the runners will be deployed into for network isolation | **Step 3** - Found in AWS Console (VPC → Your VPCs). If you don't have this, ask your AWS administrator or network team |
 | `SHARED_SUBNETS` | Comma-separated subnet IDs (no spaces) | `subnet-0123456789abcdef0,subnet-0fedcba9876543210` | Specifies which subnets (network segments) the runners will use. Need at least 2 for high availability | **Step 3** - Found in AWS Console (VPC → Subnets). Ask your AWS administrator which private subnets to use if unsure |
@@ -281,7 +281,7 @@ Go to your GitHub repository → **Settings** → **Secrets and variables** → 
 Go to **Settings** → **Secrets and variables** → **Actions** → **Variables** tab, and add these variables:
 
 | Variable Name | What to Enter | Example Value | Why You Need This | Where You Got This |
-|:--------------|:---------------|:---------------|:-------------------|:-------------------|
+|:------|:------|:---------------|:-------------------|:-------------------|
 | `SHARED_AWS_REGION` | Your AWS region code | `us-east-1`, `us-west-2`, `eu-west-1` | All AWS resources will be created in this region. Choose based on proximity to users or compliance requirements | **Step 1** - Found in AWS Console top-right, or ask your AWS administrator about your org's preferred region |
 | `SHARED_RUNNER_IMAGE` | Full ECR image URI | `123456789012.dkr.ecr.us-east-1.amazonaws.com/github-runner:latest` | The Docker image containing the GitHub Actions runner software. ECS pulls this to run your runners | **Step 6** - The full image path after building and pushing to ECR. Format: `ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/REPOSITORY:TAG` |
 | `SHARED_DESIRED_COUNT` | Number of runners (as a number) | `1`, `2`, or `5` | How many runner containers to run simultaneously. More = more parallel workflows but higher cost | **You choose this** - Start with `1` for testing. Increase to 2-5 if you need more parallel capacity. Can change later |
